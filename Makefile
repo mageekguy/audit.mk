@@ -233,7 +233,7 @@ php: .audit/php.errors .audit/files.largest.php .audit/files.psr2
 	cat $< | xargs -I@ echo '"@"' | xargs php -d memory_limit=-1 /usr/local/bin/php-cs-fixer fix --using-cache=no --verbose --dry-run --config=.audit/.php_cs 2>/dev/null | egrep "^[^)]*) " > $@
 	echo "done!"
 
-.audit/.php_cs: .audit/.
+.audit/.php_cs: | .audit/.
 	echo '<?php $$config = new PhpCsFixer\Config(); return $$config->setRules([ "@PSR2" => true ]);' > $@
 
 .PHONY: encoding
