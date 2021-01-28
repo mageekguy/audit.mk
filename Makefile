@@ -151,10 +151,10 @@ audit: .audit/files.largest.all text json yaml css binaries html js images php e
 	done < .audit/git.authors
 
 	echo "==> IP adresses and ports:"
-	echo "=> IPs: $$($(call count,.audit/files.ip))"
+	echo "=> IPs: $$($(call count,.audit/ip))"
 	cat .audit/files.ip
 	echo
-	echo "=> Ports: $$($(call count,.audit/files.ports))"
+	echo "=> Ports: $$($(call count,.audit/ports))"
 	cat .audit/files.ports
 
 .audit/files.all: $(ALL_FILES) | .audit/.
@@ -313,7 +313,7 @@ cp: .audit/files.php.cp
 	echo "done!"
 
 .PHONY: ip
-ip: .audit/files.ip .audit/files.ports
+ip: .audit/ip .audit/ports
 
 .audit/files.ip: .audit/files.txt
 	echo -n "Find IP address in text files… "
@@ -332,6 +332,12 @@ ip: .audit/files.ip .audit/files.ports
 	$(call xargs,$<) egrep -o -r '//(\d{1,3}\.){3}\d{1,3}:\d{1,5}' | tr -d "/" | awk 'BEGIN {FS=":"} NF == 2 { print file": "$$1 } NF == 3 { print $$1": "$$2":"$$3; file=$$1 }' >> $@.tmp
 	$(call uniq,$@.tmp) > $@
 	echo "done!"
+
+.audit/ip: .audit/files.ip
+	cat $< | cut -d: -f2 | sort | uniq > $@
+
+.audit/ports: .audit/files.ports
+	cat $< | cut -d: -f2,3 | sort | uniq > $@
 
 .PHONY: clean
 clean: ## Delete `.audit` directory
