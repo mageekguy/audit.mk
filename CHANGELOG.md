@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - PHPMetrics support to have more informations about PHP code architecture;
-- Possibility to generate markdown report.
+- Possibility to generate markdown report;
+- Selection of targets for audit (php, metrics, and so on);
 - JS syntax check;
 - JSON syntax check;
 - YAML syntax check;
