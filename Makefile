@@ -10,20 +10,78 @@ MKDIR:=mkdir -p
 RM:=rm -rf
 CP:=cp -r
 
+NET_BROWSER?=Safari ## <Variables> your browser's name, default value is `Safari`
 DIRECTORY?=$(shell pwd)
 TOP?=50
 PHPMETRICS_PHAR_URL?=https://github.com/phpmetrics/PhpMetrics/releases/download/v2.7.3/phpmetrics.phar
 PHPCPD_PHAR_URL?=https://phar.phpunit.de/phpcpd.phar
+LOCAL_PHP_SECURITY_CHECKER_URL?=https://github.com/fabpot/local-php-security-checker/releases/download/v1.0.0/local-php-security-checker_1.0.0_darwin_amd64
 REPORT?=.audit/report.txt
 
 FDUPES:=$(shell which fdupes || echo '/usr/local/bin/fdupes')
 BREW:=$(shell which brew || echo '/usr/local/bin/brew')
-GIT:=$(shell which git || echo '/usr/local/bin/git')
 WGET:=$(shell which wget || echo '/usr/local/bin/wget')
+GIT:=$(or $(shell which git),$(error \`git\` is not in \`$(PATH)\`, please install it!))
 GIT_COMMAND:=$(GIT) --git-dir=$(DIRECTORY)/.git
+GIT_IGNORE:=$(shell $(GIT) config --global --get core.excludesfile || echo $(HOME)/.config/git/ignore)
 
 EXCLUDE:=-not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/.audit/*"
 ALL_FILES:=$(shell find $(DIRECTORY) $(EXCLUDE) -type f | sed -e 's:$(DIRECTORY)/::g' -e 's: :\\ :g')
+
+WITH_ALL?=yes ## <Variables> `no` to not do a full audit, default value is `yes`
+
+WITH_EOL?=$(WITH_ALL) ## <Variables> `yes` to audit end of lines, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_EOL)),yes)
+REPORT_PARTS+= .audit/report.eol
+endif
+
+WITH_ENCODING?=$(WITH_ALL) ## <Variables> `yes` to audit files encoding, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(ENCODING)),yes)
+REPORT_PARTS+= .audit/report.encoding
+endif
+
+WITH_DISK_USAGE?=$(WITH_ALL) ## <Variables> `yes` to audit disk usage, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_DISK_USAGE)),yes)
+REPORT_PARTS+= .audit/report.disk
+endif
+
+WITH_PHP?=$(WITH_ALL) ## <Variables> `yes` to audit PHP files, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_PHP)),yes)
+REPORT_PARTS+= .audit/report.php
+endif
+
+WITH_PHP_METRICS?=$(WITH_ALL) ## <Variables> `yes` to generate metrics about OOP in PHP files, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_PHP_METRICS)),yes)
+REPORT_PARTS+= .audit/metrics
+endif
+
+WITH_DUPLICATED_FILES?=$(WITH_ALL) ## <Variables> `yes` to search duplicated files, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_DUPLICATED_FILES)),yes)
+REPORT_PARTS+= .audit/report.duplicates
+endif
+
+WITH_COPY_PASTE?=$(WITH_ALL) ## <Variables> `yes` to search copy/paste pattern, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_COPY_PASTE)),yes)
+REPORT_PARTS+= .audit/report.cp
+endif
+
+WITH_GIT?=$(WITH_ALL) ## <Variables> `yes` to audit git repository, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_GIT)),yes)
+REPORT_PARTS+= .audit/report.git
+endif
+
+WITH_IP?=$(WITH_ALL) ## <Variables> `yes` to search IPs and ports in files, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_IP)),yes)
+REPORT_PARTS+= .audit/report.ip
+endif
+
+define execute
+echo -n "$1…"; $2; echo " done!"
+endef
+
+define phpcsfixer
+$(call php) /usr/local/bin/php-cs-fixer fix --using-cache=no --verbose --dry-run --config=.audit/.php_cs 2>/dev/null | egrep '^[^\)]*\) '
+endef
 
 define size
 $(call quote,$1) | xargs stat -f "%z\"%N" | sort -r -n | head -n $(TOP) | cut -d\" -f2 | sed -e "s:$(DIRECTORY)::g"
@@ -61,12 +119,15 @@ define php
 php -d memory_limit=-1 
 endef
 
-define summary
+define details
+echo "For more details, see:"; for file in $(filter .audit/%,$1); do echo "- $$file"; done
 endef
 
-define details
-echo "For more details, see:"; for file in $1; do echo "- $$file"; done
+define findIp
+$(call xargs,$1) egrep -o -r $2 | tr -d $3 | awk 'BEGIN {FS=":"} NF == 1 { print file": "$$1 } NF == 2 { print $$1": "$$2; file=$$1 }'
 endef
+
+-include $(DIRECTORY)/.audit.mk
 
 .SUFFIXES:
 
@@ -86,20 +147,23 @@ default: help
 %/.:
 	$(MKDIR) $@
 
+.audit/.: $(GIT_IGNORE)
+	$(MKDIR) $@; \
+	echo "/.audit/" >> $(GIT_IGNORE); \
+	echo "/.audit.mk" >> $(GIT_IGNORE); \
+	cat $(GIT_IGNORE) | sort | uniq | tee $(GIT_IGNORE) > /dev/null
+
+$(GIT_IGNORE):
+	$(MKDIR) $(dir $@)
+
 .audit/files.duplicate.%: .audit/files.% .audit/files.duplicate
-	echo -n "Find $* duplicate files… "
-	cat $< | xargs -I@ egrep "@ " $^ | sort | uniq > $@
-	echo "done!"
+	$(call execute,Find $* duplicate files,cat $< | xargs -I@ egrep "@ " $^ | sort | uniq > $@)
 
 .audit/files.largest.%: .audit/files.%
-	echo -n "Find largest $* files on file system… "
-	$(call size,$<) > $@
-	echo "done!"
+	$(call execute,Find largest $* files on file system,$(call size,$<) > $@)
 
 .audit/files.%: .audit/files.all
-	echo -n "Find $* files… "
-	cat $< | egrep "\.$*$$" > $@ || > $@
-	echo "done!"
+	$(call execute,Find $* files,cat $< | egrep "\.$*$$" > $@ || > $@)
 
 .PHONY: audit
 audit: $(REPORT) ## Run the audit
@@ -127,20 +191,24 @@ audit: $(REPORT) ## Run the audit
 	for file in $^; do cat $$file >> $@; done
 
 .audit/report.disk.%: .audit/files.% .audit/files.largest.%
+	( \
 	echo "==> $*: $$($(call quote,.audit/files.$*) | xargs -n $$(getconf ARG_MAX) du -hsc | tail -n1 | cut -f1 | xargs)"; \
 	echo "=> Number of files: $$($(call count,.audit/files.$*))"; \
 	echo "=> Top $(TOP):"; \
 	$(call humansize,.audit/files.largest.$*); \
-	echo | tee $@;
+	) | tee $@;
+	echo \
 	$(call details,$^)
 	echo
 
-.audit/report.php: .audit/php.errors .audit/files.psr2
+.audit/report.php: .audit/php.errors .audit/files.psr2 .audit/php.security
 	( \
 	echo "==> $$(php --version | head -n 1 | cut -d\( -f1 | xargs) problems: $$($(call count,.audit/php.errors))"; \
 	echo "=> Deprecated: $$(cat .audit/php.errors | grep -i " deprecated:" | $(call wc))"; \
 	echo "=> Warning: $$(cat .audit/php.errors | grep -i " warning:" | $(call wc))"; \
 	echo "=> Error: $$(cat .audit/php.errors | grep -i " error:" | $(call wc))"; \
+	echo "=> Security problems: $$(cat .audit/php.security | egrep '^[^ ]' | $(call wc))"; \
+	cat .audit/php.security | egrep '^[^ ]' | cut -d: -f1; \
 	echo "=> PSR2 violations: $$(cat .audit/files.psr2 | $(call wc))"; \
 	echo \
 	) | tee $@
@@ -213,19 +281,15 @@ audit: $(REPORT) ## Run the audit
 report: $(REPORT)
 	echo "Report is available in $(REPORT)!"
 
-$(REPORT): .audit/report.eol .audit/report.encoding .audit/report.disk .audit/report.php .audit/report.duplicates .audit/report.cp .audit/report.git .audit/report.ip
+$(REPORT): $(REPORT_PARTS)
 	> $@; \
-	for file in $^; do cat $$file >> $@; done
+	for file in $(filter report.%,$(REPORT_PARTS)); do cat $$file >> $@; done
 
 .audit/files.all: $(ALL_FILES) | .audit/.
-	echo -n "Find all files… "; \
-	find $(DIRECTORY) $(EXCLUDE) -type f | sed -e 's:$(DIRECTORY)/::g' > $@; \
-	echo "done!"
+	$(call execute,Find all files,find $(DIRECTORY) $(EXCLUDE) -type f | sed -e 's:$(DIRECTORY)/::g' > $@)
 
 .audit/files.mime: .audit/files.all
-	echo -n "Define type of all files… "; \
-	$(call quote,.audit/files.all) | xargs file --mime-type > $@; \
-	echo "done!"
+	$(call execute,Define type of all files,$(call quote,.audit/files.all) | xargs file --mime-type > $@)
 
 .PHONY: text
 text: .audit/files.largest.txt
@@ -238,9 +302,7 @@ text: .audit/files.largest.txt
 css: .audit/files.largest.css
 
 .audit/files.css: .audit/files.all
-	echo -n "Find $* files… "; \
-	cat $< | egrep "\.css$$" | grep -v "\.min\.css" > $@ || > $@; \
-	echo "done!"
+	$(call execute,Find CSS files,cat $< | egrep "\.css$$" | grep -v "\.min\.css" > $@ || > $@)
 
 .PHONY: json
 json: .audit/files.largest.json
@@ -252,46 +314,34 @@ html: .audit/files.largest.html
 js: .audit/files.largest.js
 
 .audit/files.js: .audit/files.all
-	echo -n "Find $* files… "; \
-	cat $< | egrep "\.js$$" | grep -v "\.min\.js" > $@ || > $@; \
-	echo "done!"
+	$(call execute,Find JS files,cat $< | egrep "\.js$$" | grep -v "\.min\.js" > $@ || > $@)
 
 .PHONY: yaml
 yaml: .audit/files.largest.yaml
 
 .audit/files.yaml: .audit/files.all
-	echo -n "Find YAML files… "; \
-	cat $< | egrep "\.ya?ml$$" > $@ || > $@; \
-	echo "done!"
+	$(call execute,Find YAML files,cat $< | egrep "\.ya?ml$$" > $@ || > $@)
 
 .PHONY: binaries
 binaries: .audit/files.largest.binary
 
 .audit/files.binary: .audit/files.mime
-	echo -n "Find binary files… "; \
-	cat $< | egrep ": \s*application/octet-stream$$" | cut -d: -f1 > $@ || > $@ \
-	echo "done!"
+	$(call execute,Find binary files,cat $< | egrep ": \s*application/octet-stream$$" | cut -d: -f1 > $@ || > $@)
 
 .PHONY: images
 images: .audit/files.largest.image
 
 .audit/files.image: .audit/files.mime
-	echo -n "Find image files… "; \
-	cat $< | egrep ": \s*image/.*$$" | grep -v ".php" | cut -d: -f1 > $@ || > $@; \
-	echo "done!"
+	$(call execute,Find image files,cat $< | egrep ": \s*image/.*$$" | grep -v ".php" | cut -d: -f1 > $@ || > $@)
 
 .PHONY: php
 php: .audit/php.errors .audit/files.largest.php .audit/files.psr2
 
 .audit/php.errors: .audit/files.php
-	echo -n "Find syntax problem in PHP files… "; \
-	cat $< | xargs -I@ -L1 sh -c "php -l "@" 1>/dev/null || exit 0" 2>$@; \
-	echo "done!"
+	$(call execute,Find syntax problem in PHP files,cat $< | xargs -I@ -L1 sh -c "php -l "@" 1>/dev/null || exit 0" 2>$@)
 
 .audit/files.psr2: .audit/files.php .audit/.php_cs
-	echo -n "Analyse coding style of PHP files according to PSR2… "; \
-	cat $< | xargs -I@ echo '"@"' | xargs $(call php) /usr/local/bin/php-cs-fixer fix --using-cache=no --verbose --dry-run --config=.audit/.php_cs 2>/dev/null | egrep "^[^)]*) " > $@; \
-	echo "done!"
+	$(call execute,Analyse coding style of PHP files according to PSR2,cat $< | xargs -I@ echo '"@"' | xargs $(call phpcsfixer) > $@)
 
 .audit/.php_cs: | .audit/.
 	echo '<?php $$config = new PhpCsFixer\Config(); return $$config->setRules([ "@PSR2" => true ]);' > $@
@@ -300,29 +350,19 @@ php: .audit/php.errors .audit/files.largest.php .audit/files.psr2
 encoding: .audit/encodings .audit/files.unix .audit/files.dos .audit/files.mac
 
 .audit/files.analyze: .audit/files.txt
-	echo -n "Prepare detection of encoding and EOL in text files… "; \
-	$(call quote,$<) | xargs file > $@; \
-	echo "done!"
+	$(call execute,Prepare detection of encoding and EOL in text files,$(call quote,$<) | xargs file > $@)
 
 .audit/files.unix: .audit/files.analyze
-	echo -n "Detect UNIX EOL in text files… "; \
-	cat $< | grep -v "CRLF line terminators" | grep -v "CR line terminators" | cut -d: -f1 > $@; \
-	echo "done!"
+	$(call execute,Detect UNIX EOL in text files,cat $< | grep -v "CRLF line terminators" | grep -v "CR line terminators" | cut -d: -f1 > $@)
 
 .audit/files.mac: .audit/files.analyze
-	echo -n "Detect MAC EOL in text files… "; \
-	cat $< | grep "CR line terminators" | cut -d: -f1 > $@; \
-	echo "done!"
+	$(call execute,Detect MAC EOL in text files,cat $< | grep "CR line terminators" | cut -d: -f1 > $@)
 
 .audit/files.dos: .audit/files.analyze
-	echo -n "Detect DOS EOL in text files… "; \
-	cat $< | grep "CRLF line terminators" | cut -d: -f1 > $@; \
-	echo "done!"
+	$(call execute,Detect DOS EOL in text files,cat $< | grep "CRLF line terminators" | cut -d: -f1 > $@)
 
 .audit/files.encoding: .audit/files.txt
-	echo -n "Detect encoding in text files… "; \
-	$(call quote,$<) | xargs file --mime-encoding | tr -d ' ' > $@; \
-	echo "done!"
+	$(call execute,Detect encoding in text files,$(call quote,$<) | xargs file --mime-encoding | tr -d ' ' > $@)
 
 .audit/encodings: .audit/files.encoding
 	cat $< | cut -d: -f2 | tr -d ' ' | sort | uniq > .audit/encodings; \
@@ -331,33 +371,23 @@ encoding: .audit/encodings .audit/files.unix .audit/files.dos .audit/files.mac
 .PHONY: git
 git: .audit/git.authors .audit/git.branches .audit/git.tags .audit/git.duplicate
 
-.audit/git.authors: | $(GIT)
-	echo -n "Extract authors… "; \
-	$(GIT_COMMAND) shortlog --no-merges -sn --all | sed -e 's/\(\d*\)\t/\1:/g' -e 's/^ *//' > $@; \
-	echo "done!"
+.audit/git.authors: | $(GIT) .audit/.
+	$(call execute,Extract authors,$(GIT_COMMAND) shortlog --no-merges -sn --all | sed -e 's/\(\d*\)\t/\1:/g' -e 's/^ *//' > $@)
 
 .audit/git.branches: | $(GIT)
-	echo -n "Extract Git branches… "; \
-	$(GIT_COMMAND) branch -r > $@; \
-	echo "done!"
+	$(call execute,Extract Git branches,$(GIT_COMMAND) branch -r > $@)
 
 .audit/git.tags: | $(GIT)
-	echo -n "Extract Git tags… "; \
-	$(GIT_COMMAND) for-each-ref --sort=taggerdate --format '%(refname) %(taggerdate)' refs/tags > $@; \
-	echo "done!"
+	$(call execute,Extract Git tags,$(GIT_COMMAND) for-each-ref --sort=taggerdate --format '%(refname) %(taggerdate)' refs/tags > $@)
 
 .audit/git.duplicate: | $(GIT)
-	echo -n "Find duplicate Git commit messages… "; \
-	$(GIT_COMMAND) log --oneline --no-merges | cut -c 10- | sort -n -r | uniq -c | grep -v "1 " > $@; \
-	echo "done!"
+	$(call execute,Find duplicate Git commit messages,$(GIT_COMMAND) log --oneline --no-merges | cut -c 10- | sort -n -r | uniq -c | grep -v "1 " > $@)
 
 .PHONY: duplicate
 duplicate: .audit/files.duplicate.php .audit/files.duplicate.js .audit/files.duplicate.css .audit/files.duplicate.json .audit/files.duplicate.yaml .audit/files.duplicate.image .audit/files.duplicate.binary
 
 .audit/files.duplicate: | $(FDUPES)
-	echo -n "Find duplicate files… "; \
-	$(FDUPES) -r --sameline $(DIRECTORY) 2>/dev/null | sed -e "s#$(DIRECTORY)/##g" > $@; \
-	echo "done!"
+	$(call execute,Find duplicate files,$(FDUPES) -r --sameline $(DIRECTORY) 2>/dev/null | sed -e "s#$(DIRECTORY)/##g" > $@)
 
 $(FDUPES): | $(BREW)
 	$(BREW) install fdupes
@@ -366,35 +396,19 @@ $(FDUPES): | $(BREW)
 cp: .audit/files.php.cp
 
 .audit/files.php.cp: .audit/files.php | .audit/phpcpd.phar 
-	echo -n "Find copy/paste in PHP files… "; \
-	cat $< | xargs -I@ echo '"@"' | xargs $(call php) .audit/phpcpd.phar --fuzzy | sed -e "s#$(DIRECTORY)#.#" > .audit/files.php.cp; \
-	echo "done!"
+	$(call execute,Find copy/paste in PHP files,cat $< | xargs -I@ echo '"@"' | xargs $(call php) .audit/phpcpd.phar --fuzzy | sed -e "s#$(DIRECTORY)#.#" > .audit/files.php.cp)
 
 .audit/phpcpd.phar: | .audit/. $(WGET)
-	echo -n "Install phpcpd… "; \
-	$(call wget,$(PHPCPD_PHAR_URL),$@); \
-	echo "done!"
+	$(call execute,Install phpcpd,$(call wget,$(PHPCPD_PHAR_URL),$@))
 
 .PHONY: ip
 ip: .audit/ip .audit/ports
 
 .audit/files.ip: .audit/files.txt
-	echo -n "Find IP address in text files… "; \
-	$(call xargs,$<) egrep -o -r "'(\d{1,3}\.){3}\d{1,3}'" | tr -d "'" | awk 'BEGIN {FS=":"} NF == 1 { print file": "$$1 } NF == 2 { print $$1": "$$2; file=$$1 }' > $@.tmp; \
-	$(call xargs,$<) egrep -o -r '"(\d{1,3}\.){3}\d{1,3}"' | tr -d '"' | awk 'BEGIN {FS=":"} NF == 1 { print file": "$$1 } NF == 2 { print $$1": "$$2; file=$$1 }' >> $@.tmp; \
-	$(call xargs,$<) egrep -o -r '@(\d{1,3}\.){3}\d{1,3}' | tr -d "@" | awk 'BEGIN {FS=":"} NF == 1 { print file": "$$1 } NF == 2 { print $$1": "$$2; file=$$1 }' >> $@.tmp; \
-	$(call xargs,$<) egrep -o -r '//(\d{1,3}\.){3}\d{1,3}' | tr -d "/" | awk 'BEGIN {FS=":"} NF == 1 { print file": "$$1 } NF == 2 { print $$1": "$$2; file=$$1 }' >> $@.tmp; \
-	$(call uniq,$@.tmp) > $@; \
-	echo "done!"
+	$(call execute,Find IP address in text files,> $@; $(call findIp,$<,$(strip "'(\d{1,3}\.){3}\d{1,3}'"),"'") >> $@; $(call findIp,$<,$(strip '"(\d{1,3}\.){3}\d{1,3}"'),'"') >> $@; $(call findIp,$<,$(strip '@(\d{1,3}\.){3}\d{1,3}'),'@') >> $@; $(call findIp,$<,$(strip '//(\d{1,3}\.){3}\d{1,3}'),'/') >> $@; $(call uniq,$@) | tee $@ > /dev/null)
 
 .audit/files.ports: .audit/files.txt
-	echo -n "Find IP port in text files… "; \
-	$(call xargs,$<) egrep -o -r "'(\d{1,3}\.){3}\d{1,3}:\d{1,5}'" | tr -d "'" | awk 'BEGIN {FS=":"} NF == 2 { print file": "$$1 } NF == 3 { print $$1": "$$2":"$$3; file=$$1 }' > $@.tmp; \
-	$(call xargs,$<) egrep -o -r '"(\d{1,3}\.){3}\d{1,3}:\d{1,5}"' | tr -d '"' | awk 'BEGIN {FS=":"} NF == 2 { print file": "$$1 } NF == 3 { print $$1": "$$2":"$$3; file=$$1 }' >> $@.tmp; \
-	$(call xargs,$<) egrep -o -r '@(\d{1,3}\.){3}\d{1,3}:\d{1,5}' | tr -d "@" | awk 'BEGIN {FS=":"} NF == 2 { print file": "$$1 } NF == 3 { print $$1": "$$2":"$$3; file=$$1 }' >> $@.tmp; \
-	$(call xargs,$<) egrep -o -r '//(\d{1,3}\.){3}\d{1,3}:\d{1,5}' | tr -d "/" | awk 'BEGIN {FS=":"} NF == 2 { print file": "$$1 } NF == 3 { print $$1": "$$2":"$$3; file=$$1 }' >> $@.tmp; \
-	$(call uniq,$@.tmp) > $@; \
-	echo "done!"
+	$(call execute,Find IP port in text files,> $@; $(call findIp,$<,$(strip "'(\d{1,3}\.){3}\d{1,3}:\d{1,5}'"),"'") >> $@; $(call findIp,$<,$(strip '"(\d{1,3}\.){3}\d{1,3}:\d{1,5}"'),'"') >> $@; $(call findIp,$<,$(strip '@(\d{1,3}\.){3}\d{1,3}:\d{1,5}'),"@") >> $@; $(call findIp,$<,$(strip '//(\d{1,3}\.){3}\d{1,3}:\d{1,5}'),'/') >> $@; $(call uniq,$@) | tee $@ > /dev/null)
 
 .audit/ip: .audit/files.ip
 	cat $< | cut -d: -f2 | tr -d ' ' | sort | uniq > $@
@@ -406,14 +420,17 @@ ip: .audit/ip .audit/ports
 metrics: .audit/metrics
 
 .audit/metrics: | .audit/phpmetrics.phar
-	echo -n "Run phpmetrics… "; \
-	$(call php) /usr/local/bin/phpmetrics --quiet --report-html=$@ $(DIRECTORY); \
-	echo "done!"
+	$(call execute,Run phpmetrics,$(call php) /usr/local/bin/phpmetrics --quiet --report-html=$@ $(DIRECTORY))
+	open -a $(NET_BROWSER) -g $@/index.html
 
 .audit/phpmetrics.phar: | .audit/. $(WGET)
-	echo -n "Install phpmetrics… "; \
-	$(call wget,$(PHPMETRICS_PHAR_URL),$@); \
-	echo "done!"
+	$(call execute,Install phpmetrics,$(call wget,$(PHPMETRICS_PHAR_URL),$@))
+
+.audit/php.security: | .audit/local-php-security-checker
+	find $(DIRECTORY) -type f -name composer.lock | xargs -I@ .audit/local-php-security-checker --path @ --format=yaml | grep -v '{}' | tee $@
+
+.audit/local-php-security-checker: | .audit/. $(WGET)
+	$(call execute,Install local-php-security-checker,$(call wget,$(LOCAL_PHP_SECURITY_CHECKER_URL),$@) && chmod u+x $@)
 
 $(GIT): | $(BREW)
 	$(BREW) install git
@@ -431,11 +448,11 @@ clean: ## Delete `.audit` directory
 .PHONY: reaudit
 reaudit: ## Delete `.audit` directory and run the audit
 	$(MAKE) -f $(THIS_MAKEFILE) clean
-	$(MAKE) -f $(THIS_MAKEFILE) report
+	$(MAKE) -f $(THIS_MAKEFILE) audit
 
 .PHONY: help
 help: ## <Help> Display this help.
-	sed -e '/#\{2\} /!d; s/:[^#]*##/:/; s/\([^:]*\): <\([^>]*\)> \(.*\)/\2:\1:\3/; s/\([^:]*\): \([^<]*.*\)/Misc.:\1:\2/' $(MAKEFILE_LIST) | \
+	sed -e '/#\{2\} /!d; s/[?=:][^#]*##/:/; s/# *\([^#]\+\)##/\1:/; s/\([^:?]*\): <\([^>]*\)> \(.*\)/\2:\1:\3/; s/\([^:]*\): \([^<]*.*\)/Misc.:\1:\2/' $(MAKEFILE_LIST) | \
 	sort -t: -d | \
 	awk 'BEGIN{FS=":"; section=""} { if ($$1 != section) { section=$$1; printf "\n\033[1m%s\033[0m\n", $$1 } printf "\t\033[92m%s\033[0m:%s\n", $$2, $$3 }' | \
-	column -c2 -t -s:
+	column -c2 -t -s :
