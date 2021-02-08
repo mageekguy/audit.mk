@@ -381,7 +381,7 @@ git: .audit/git.authors .audit/git.branches .audit/git.tags .audit/git.duplicate
 	$(call execute,Extract Git tags,$(GIT_COMMAND) for-each-ref --sort=taggerdate --format '%(refname) %(taggerdate)' refs/tags > $@)
 
 .audit/git.duplicate: | $(GIT)
-	$(call execute,Find duplicate Git commit messages,$(GIT_COMMAND) log --oneline --no-merges | cut -c 10- | sort -n -r | uniq -c | grep -v "1 " > $@)
+	$(call execute,Find duplicate Git commit messages,$(GIT_COMMAND) log --format="%s" --no-merges | sort | uniq -c | grep -v "1 " | sort -rn > $@)
 
 .PHONY: duplicate
 duplicate: .audit/files.duplicate.php .audit/files.duplicate.js .audit/files.duplicate.css .audit/files.duplicate.json .audit/files.duplicate.yaml .audit/files.duplicate.image .audit/files.duplicate.binary
