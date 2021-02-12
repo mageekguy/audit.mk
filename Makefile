@@ -77,7 +77,7 @@ endif
 
 WITH_GIT_GRAPH?=$(WITH_ALL) ## <Variables> `yes` to compute some graphs about commit frequency, default value is value of `WITH_ALL` variable
 ifeq ($(strip $(WITH_GIT_GRAPH)),yes)
-REPORT_PARTS+= graph/git
+REPORT_PARTS+= .audit/report.graph.git
 endif
 
 define execute
@@ -452,13 +452,18 @@ $(WGET): | $(BREW)
 $(BREW):
 	/bin/bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-.PHONY: graph/git
-graph/git: graph/git/commits/month graph/git/commits/day graph/git/commits/hour
+.audit/report.graph.git: .audit/report.graph.git.authors .audit/report.graph.git.commits.month .audit/report.graph.git.commits.day .audit/report.graph.git.commits.hour
+	$(RM) $@; \
+	for file in $^; do cat $$file >> $@; done
 
-.PHONY: graph/git/commits/month
-graph/git/commits/month: .audit/report.graph.git.commit.month
+.audit/report.graph.git.authors: .audit/git.authors | .audit/.
+	( \
+		echo "==> Commits by author:"; \
+		cat $< | awk -F: '{ count[$$2] = $$1; total += $$1 } END { for (commiter in count) { $(call bargraph,count[commiter]) printf( "%9s %s %s\n", count[commiter], s, commiter ); } } }' | sort -rn; \
+		echo; \
+	) | tee $@
 
-.audit/report.graph.git.commit.month: .audit/git.commits | .audit/.
+.audit/report.graph.git.commits.month: .audit/git.commits | .audit/.
 	( \
 		echo "==> Commits by month:"; \
 		for month in Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec; do \
@@ -467,10 +472,7 @@ graph/git/commits/month: .audit/report.graph.git.commit.month
 		echo; \
 	) | tee $@
 
-.PHONY: graph/git/commits/day
-graph/git/commits/day: .audit/report.graph.git.commit.day
-
-.audit/report.graph.git.commit.day: .audit/git.commits | .audit/.
+.audit/report.graph.git.commits.day: .audit/git.commits | .audit/.
 	( \
 		echo "==> Commits by day:"; \
 		dayNumber=1; \
@@ -480,9 +482,6 @@ graph/git/commits/day: .audit/report.graph.git.commit.day
 		done | awk '{ count[$$1" "$$2] = $$3; total += $$3; } END{ for (day in count) { $(call bargraph,count[day]) printf("\t%s\t%s\t%-0s\t%s\n", substr(day,0,1), substr(day,3,5), count[day], s); } } }' | sort -k 1 -n | awk '{$$1=""}1' | awk '{$$1=$$1}1' | awk '{printf("\t%s\t%s\t%s\n", $$1, $$2, $$3)}'; \
 		echo; \
 	) | tee $@
-
-.PHONY: graph/git/commits/hour
-graph/git/commits/hour: .audit/report.graph.git.commits.hour
 
 .audit/report.graph.git.commits.hour: .audit/git.commits | .audit/.
 	( \
