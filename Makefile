@@ -75,6 +75,11 @@ ifeq ($(strip $(WITH_IP)),yes)
 REPORT_PARTS+= .audit/report.ip
 endif
 
+WITH_GIT_GRAPH?=$(WITH_ALL) ## <Variables> `yes` to compute some graphs about commit frequency, default value is value of `WITH_ALL` variable
+ifeq ($(strip $(WITH_GIT_GRAPH)),yes)
+REPORT_PARTS+= graph/git
+endif
+
 define execute
 echo -n "$1…"; $2; echo " done!"
 endef
@@ -120,12 +125,20 @@ php -d memory_limit=-1
 endef
 
 define details
-echo "For more details, see:"; for file in $(filter .audit/%,$1); do echo "- $$file"; done
+echo; \
+echo 'For more details, see:'; \
+for file in $(filter .audit/%,$1); do echo "- $$file"; done; \
+echo;
 endef
 
 define findIp
 $(call xargs,$1) egrep -o -r $2 | tr -d $3 | awk 'BEGIN {FS=":"} NF == 1 { print file": "$$1 } NF == 2 { print $$1": "$$2; file=$$1 }'
 endef
+
+define bargraph
+s="|"; if (total > 0) { percent = (($1 / total) * 100) / 1.25; for (i = 1; i <= percent; ++i) { s=s"█" }
+endef
+
 
 -include $(DIRECTORY)/.audit.mk
 
@@ -147,14 +160,11 @@ default: help
 %/.:
 	$(MKDIR) $@
 
-.audit/.: $(GIT_IGNORE)
+.audit/.: $(dir $(GIT_IGNORE))/.
 	$(MKDIR) $@; \
 	echo "/.audit/" >> $(GIT_IGNORE); \
 	echo "/.audit.mk" >> $(GIT_IGNORE); \
 	cat $(GIT_IGNORE) | sort | uniq | tee $(GIT_IGNORE) > /dev/null
-
-$(GIT_IGNORE):
-	$(MKDIR) $(dir $@)
 
 .audit/files.duplicate.%: .audit/files.% .audit/files.duplicate
 	$(call execute,Find $* duplicate files,cat $< | xargs -I@ egrep "@ " $^ | sort | uniq > $@)
@@ -174,7 +184,7 @@ audit: $(REPORT) ## Run the audit
 	echo "=> DOS: $$($(call count,.audit/files.dos))"; \
 	echo "=> unix: $$($(call count,.audit/files.unix))"; \
 	echo "=> mac: $$($(call count,.audit/files.mac))"; \
-	echo \
+	echo; \
 	) | tee $@
 	$(call details,$^)
 
@@ -182,7 +192,7 @@ audit: $(REPORT) ## Run the audit
 	( \
 	echo "==> Encoding: $$($(call count,.audit/encodings))" && \
 	for encoding in $$(cat .audit/encodings); do echo "=> $$encoding: $$($(call count,.audit/$$encoding))"; done && \
-	echo \
+	echo; \
 	) | tee $@
 	$(call details,$^)
 
@@ -197,9 +207,7 @@ audit: $(REPORT) ## Run the audit
 	echo "=> Top $(TOP):"; \
 	$(call humansize,.audit/files.largest.$*); \
 	) | tee $@;
-	echo \
 	$(call details,$^)
-	echo
 
 .audit/report.php: .audit/php.errors .audit/files.psr2 .audit/php.security
 	( \
@@ -210,7 +218,7 @@ audit: $(REPORT) ## Run the audit
 	echo "=> Security problems: $$(cat .audit/php.security | egrep '^[^ ]' | $(call wc))"; \
 	cat .audit/php.security | egrep '^[^ ]' | cut -d: -f1; \
 	echo "=> PSR2 violations: $$(cat .audit/files.psr2 | $(call wc))"; \
-	echo \
+	echo; \
 	) | tee $@
 	$(call details,$^)
 
@@ -225,7 +233,7 @@ audit: $(REPORT) ## Run the audit
 	echo "=> YAML: $$($(call count,.audit/files.duplicate.yaml))"; \
 	echo "=> Images: $$($(call count,.audit/files.duplicate.image))"; \
 	echo "=> Binaries: $$($(call count,.audit/files.duplicate.binary))"; \
-	echo \
+	echo; \
 	) | tee $@
 	$(call details,$^)
 
@@ -283,7 +291,7 @@ report: $(REPORT)
 
 $(REPORT): $(REPORT_PARTS)
 	> $@; \
-	for file in $(filter report.%,$(REPORT_PARTS)); do cat $$file >> $@; done
+	for file in $(filter .audit/report.%,$(REPORT_PARTS)); do cat $$file >> $@; done
 
 .audit/files.all: $(ALL_FILES) | .audit/.
 	$(call execute,Find all files,find $(DIRECTORY) $(EXCLUDE) -type f | sed -e 's:$(DIRECTORY)/::g' > $@)
@@ -374,14 +382,17 @@ git: .audit/git.authors .audit/git.branches .audit/git.tags .audit/git.duplicate
 .audit/git.authors: | $(GIT) .audit/.
 	$(call execute,Extract authors,$(GIT_COMMAND) shortlog --no-merges -sn --all | sed -e 's/\(\d*\)\t/\1:/g' -e 's/^ *//' > $@)
 
-.audit/git.branches: | $(GIT)
+.audit/git.branches: | $(GIT) .audit/.
 	$(call execute,Extract Git branches,$(GIT_COMMAND) branch -r > $@)
 
-.audit/git.tags: | $(GIT)
+.audit/git.tags: | $(GIT) .audit/.
 	$(call execute,Extract Git tags,$(GIT_COMMAND) for-each-ref --sort=taggerdate --format '%(refname) %(taggerdate)' refs/tags > $@)
 
-.audit/git.duplicate: | $(GIT)
+.audit/git.duplicate: | $(GIT) .audit/.
 	$(call execute,Find duplicate Git commit messages,$(GIT_COMMAND) log --format="%s" --no-merges | sort | uniq -c | grep -v "1 " | sort -rn > $@)
+
+.audit/git.commits: | $(GIT) .audit/.
+	$(call execute,Collect all commits,$(GIT_COMMAND) shortlog -n --no-merges --format='%ad %s' > $@)
 
 .PHONY: duplicate
 duplicate: .audit/files.duplicate.php .audit/files.duplicate.js .audit/files.duplicate.css .audit/files.duplicate.json .audit/files.duplicate.yaml .audit/files.duplicate.image .audit/files.duplicate.binary
@@ -440,6 +451,47 @@ $(WGET): | $(BREW)
 
 $(BREW):
 	/bin/bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+.PHONY: graph/git
+graph/git: graph/git/commits/month graph/git/commits/day graph/git/commits/hour
+
+.PHONY: graph/git/commits/month
+graph/git/commits/month: .audit/report.graph.git.commit.month
+
+.audit/report.graph.git.commit.month: .audit/git.commits | .audit/.
+	( \
+		echo "==> Commits by month:"; \
+		for month in Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec; do \
+			echo -e "\t$$month\t$$(cat $< |  grep " $$month " | wc -l)"; \
+		done | awk '{ count[$$1] = $$2; total += $$2 } END { for (month in count) { $(call bargraph,count[month]) printf( "\t%s\t%-0s\t%s\n", month, count[month], s ); } } }' | LC_TIME="en_EN.UTF-8" sort -M; \
+		echo; \
+	) | tee $@
+
+.PHONY: graph/git/commits/day
+graph/git/commits/day: .audit/report.graph.git.commit.day
+
+.audit/report.graph.git.commit.day: .audit/git.commits | .audit/.
+	( \
+		echo "==> Commits by day:"; \
+		dayNumber=1; \
+		for dayName in Mon Tue Wed Thu Fri Sat Sun; do \
+			echo -e "\t$$dayNumber\t$$dayName\t$$(cat $< | grep "$$dayName " | wc -l)"; \
+			dayNumber=$$((dayNumber+1)); \
+		done | awk '{ count[$$1" "$$2] = $$3; total += $$3; } END{ for (day in count) { $(call bargraph,count[day]) printf("\t%s\t%s\t%-0s\t%s\n", substr(day,0,1), substr(day,3,5), count[day], s); } } }' | sort -k 1 -n | awk '{$$1=""}1' | awk '{$$1=$$1}1' | awk '{printf("\t%s\t%s\t%s\n", $$1, $$2, $$3)}'; \
+		echo; \
+	) | tee $@
+
+.PHONY: graph/git/commits/hour
+graph/git/commits/hour: .audit/report.graph.git.commits.hour
+
+.audit/report.graph.git.commits.hour: .audit/git.commits | .audit/.
+	( \
+		echo "==> Commits by hour:"; \
+		for hour in $$(seq -w 0 23); do \
+			echo -e "\t$$hour\t$$(cat $< | grep ' '$$hour: | wc -l)"; \
+		done | awk '{ count[$$1] = $$2; total += $$2 } END{ for (hour in count) { $(call bargraph,count[hour]) printf( "\t%s\t%-0s\t%s\n", hour, count[hour], s ); } } }' | sort; \
+		echo; \
+	) | tee $@
 
 .PHONY: clean
 clean: ## Delete `.audit` directory
