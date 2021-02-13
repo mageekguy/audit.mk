@@ -19,7 +19,7 @@
 
 # Requirements
 
-Requirements to use `àudit.mk` are:
+Requirements to use `audit.mk` are:
 
 - OSX;
 - [GNU Make](https://www.gnu.org/software/make/);
