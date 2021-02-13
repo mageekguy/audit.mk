@@ -14,7 +14,8 @@
 - Find commits number, branches, tags, authors, first commit and last commit in a Git repository;
 - Find commits number, branches, tags, authors, first commit and last commit for each authors in a Git repository;
 - Find duplicated commit messages;
-- Search hardcoded IP addresses.
+- Search hardcoded IP addresses;
+- Generate graphes about git repository (commits frequency by hour, day, months, number of commits for each commiter).
 
 # Requirements
 
